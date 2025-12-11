@@ -9,10 +9,72 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder
 import time
 from datetime import datetime
-import math  # <--- เพิ่ม import math (สำคัญมาก!)
+import math
 
 # --- 1. Config ---
 st.set_page_config(page_title="RoadRisk AI Center", page_icon="🧭", layout="wide")
+
+# --- 🎨 UI & CSS Styling (ชุดแต่งหล่อ) ---
+st.markdown("""
+<style>
+    /* 1. นำเข้าฟอนต์ Google (Prompt) ให้ดูทันสมัย */
+    @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Prompt', sans-serif;
+    }
+
+    /* 2. แต่งปุ่มกด (Modern Button) */
+    div.stButton > button {
+        background: linear-gradient(90deg, #FF416C 0%, #FF4B2B 100%);
+        color: white;
+        border: none;
+        padding: 12px 28px;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+        font-size: 16px;
+        margin: 4px 2px;
+        cursor: pointer;
+        border-radius: 30px; /* ขอบมน */
+        box-shadow: 0 4px 15px rgba(255, 65, 108, 0.4); /* เงาฟุ้งๆ */
+        transition: all 0.3s ease-in-out;
+        font-weight: 600;
+    }
+    
+    /* Effect ตอนเอาเมาส์ชี้ปุ่ม */
+    div.stButton > button:hover {
+        transform: translateY(-3px); /* ลอยขึ้นนิดนึง */
+        box-shadow: 0 8px 25px rgba(255, 65, 108, 0.6);
+        background: linear-gradient(90deg, #FF4B2B 0%, #FF416C 100%);
+    }
+
+    /* 3. แต่ง Logo (Text Gradient) */
+    .logo-text {
+        font-size: 50px;
+        font-weight: 800;
+        background: -webkit-linear-gradient(45deg, #FF416C, #FF4B2B);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: -10px;
+    }
+    
+    .subtitle {
+        font-size: 20px;
+        color: #555;
+        font-weight: 300;
+        letter-spacing: 1px;
+    }
+
+    /* 4. แต่ง Card/Metric ให้ดูดีขึ้น */
+    div[data-testid="stMetricValue"] {
+        font-size: 28px;
+        color: #FF4B2B;
+        font-weight: bold;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # พิกัดและข้อมูลถนน
 tambon_coords = {
@@ -55,47 +117,30 @@ def train_ai_model(df_stats):
     model.fit(X, y)
     return model, le_tambon, le_vehicle
 
-# --- 3. Routing & Helper Functions (แก้ไขแล้ว!) ---
+# --- 3. Routing & Helper Functions ---
 @st.cache_data(ttl=3600)
 def get_route_osrm(start_coords, end_coords):
-    """คำนวณเส้นทางจาก OSRM (มีระบบสำรองถ้า API ล่ม)"""
-    # 1. ลองยิงไปที่ OSRM API
     url = f"http://router.project-osrm.org/route/v1/driving/{start_coords[1]},{start_coords[0]};{end_coords[1]},{end_coords[0]}?overview=full&geometries=geojson"
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
     try:
-        response = requests.get(url, headers=headers, timeout=3)
+        response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
             data = response.json()
             if data['code'] == 'Ok':
                 route = data['routes'][0]
                 path_coords = [[p[1], p[0]] for p in route['geometry']['coordinates']]
-                return {
-                    'distance_km': route['distance'] / 1000,
-                    'duration_min': route['duration'] / 60,
-                    'path': path_coords,
-                    'status': 'ok'
-                }
-    except:
-        pass # ถ้า Error ให้ข้ามไปทำ Fallback
-
-    # 2. ระบบสำรอง (Fallback): คำนวณระยะขจัด (Haversine)
-    R = 6371 # รัศมีโลก (กม.)
+                return {'distance_km': route['distance'] / 1000, 'duration_min': route['duration'] / 60, 'path': path_coords, 'status': 'ok'}
+    except: pass
+    
+    # Fallback (เส้นตรง)
+    R = 6371
     dLat = math.radians(end_coords[0] - start_coords[0])
     dLon = math.radians(end_coords[1] - start_coords[1])
     a = math.sin(dLat/2)**2 + math.cos(math.radians(start_coords[0])) * math.cos(math.radians(end_coords[0])) * math.sin(dLon/2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     dist_km = R * c
-    
-    # ประเมินเวลา (สมมติความเร็วเฉลี่ย 30 กม./ชม.)
-    duration_min = (dist_km / 30) * 60 
-    
-    return {
-        'distance_km': dist_km,
-        'duration_min': duration_min,
-        'path': [start_coords, end_coords], # เส้นตรง
-        'status': 'fallback'
-    }
+    duration_min = (dist_km / 30) * 60
+    return {'distance_km': dist_km, 'duration_min': duration_min, 'path': [start_coords, end_coords], 'status': 'fallback'}
 
 def find_nearest_tambon(lat, lng):
     min_dist = 9999
@@ -123,7 +168,6 @@ def load_data():
         return df.dropna(subset=['lat'])
     except: return None
 
-# --- Smart Advice Generator ---
 def generate_advice_card(risk_score, tambon_name, is_rain, vehicle_type, hour):
     tips = []
     if risk_score > 70: tips.append("🚨 **อันตรายสูง:** หลีกเลี่ยงเส้นทางนี้หรือจอดพัก")
@@ -152,8 +196,14 @@ if df_tambon is not None:
     st.sidebar.title("📡 Control Center")
     if st.sidebar.button("🔄 สแกนพื้นที่เสี่ยง"): st.sidebar.success("Scanning complete.")
 
-    st.title("🚦 RoadRisk AI: Travel Companion")
-    st.caption("เพื่อนร่วมทางอัจฉริยะ: วางแผนเส้นทาง | ประเมินความเสี่ยง | แนะนำการขับขี่")
+    # --- Header with Logo ---
+    c_logo1, c_logo2 = st.columns([1, 4])
+    with c_logo1:
+        st.image("https://cdn-icons-png.flaticon.com/512/1048/1048313.png", width=120) 
+    with c_logo2:
+        st.markdown('<p class="logo-text">RoadRisk AI</p>', unsafe_allow_html=True)
+        st.markdown('<p class="subtitle">เพื่อนร่วมทางอัจฉริยะ ภูเก็ต</p>', unsafe_allow_html=True)
+    st.markdown("---")
 
     cols = st.columns(4)
     cols[0].metric("🌡️ อุณหภูมิ", f"{weather_now['temp']} °C")
@@ -212,22 +262,16 @@ if df_tambon is not None:
         with c_time: travel_time = st.time_input("เวลาเดินทาง", current_time)
         with c_veh: vehicle_type = st.radio("ยานพาหนะ", ["Motorcycle", "Car"])
         
-        # ปุ่มคำนวณ
         if c_btn.button("🚀 คำนวณความเสี่ยงและขอคำแนะนำ", type="primary"):
             if start_coord and end_coord:
-                # 1. คำนวณเส้นทาง (ด้วยเวอร์ชันใหม่ที่มี Fallback)
                 route_data = get_route_osrm(start_coord, end_coord)
                 
-                # 2. ทำนายความเสี่ยง
                 rain = weather_now['is_rain']
                 v_code = le_vehicle.transform([vehicle_type])[0]
                 t_end_code = le_tambon.transform([end_name])[0]
                 risk_end = model.predict([[t_end_code, travel_time.hour, rain, v_code]])[0]
-                
-                # 3. สร้างคำแนะนำ
                 advice_list = generate_advice_card(risk_end, end_name, rain, vehicle_type, travel_time.hour)
 
-                # 4. บันทึกลง Session State
                 st.session_state['calc_result'] = {
                     'route_data': route_data,
                     'trip_risk': risk_end,
@@ -237,11 +281,8 @@ if df_tambon is not None:
             else:
                 st.warning("กรุณาเลือกจุดเริ่มต้นและปลายทางให้ครบถ้วน")
 
-        # แสดงผลลัพธ์จาก Session State
         if 'calc_result' in st.session_state:
             res = st.session_state['calc_result']
-            
-            # แจ้งเตือนถ้าใช้เส้นทางสำรอง
             if res['route_data']['status'] == 'fallback':
                 st.warning("⚠️ ไม่สามารถเชื่อมต่อระบบนำทางได้: แสดงระยะทางเส้นตรงและการประเมินเวลาคร่าวๆ แทน")
 
