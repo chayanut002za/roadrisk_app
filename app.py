@@ -54,24 +54,48 @@ def train_ai_model(df_stats):
     model.fit(X, y)
     return model, le_tambon, le_vehicle
 
-# --- 3. Routing & Helper Functions ---
+# --- แก้ไขฟังก์ชันนี้ (เพิ่มสูตรคำนวณสำรอง) ---
 @st.cache_data(ttl=3600)
 def get_route_osrm(start_coords, end_coords):
+    # 1. ลองยิงไปที่ OSRM API (Server ฟรี)
     url = f"http://router.project-osrm.org/route/v1/driving/{start_coords[1]},{start_coords[0]};{end_coords[1]},{end_coords[0]}?overview=full&geometries=geojson"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0'} # ปลอมตัวเป็น Browser
+    
     try:
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(url, headers=headers, timeout=3) # รอแค่ 3 วิพอ
         if response.status_code == 200:
             data = response.json()
             if data['code'] == 'Ok':
                 route = data['routes'][0]
                 path_coords = [[p[1], p[0]] for p in route['geometry']['coordinates']]
-                return {'distance_km': route['distance'] / 1000, 'duration_min': route['duration'] / 60, 'path': path_coords, 'status': 'ok'}
-    except: pass
+                return {
+                    'distance_km': route['distance'] / 1000,
+                    'duration_min': route['duration'] / 60,
+                    'path': path_coords,
+                    'status': 'ok'
+                }
+    except:
+        pass # ถ้า Error ให้ข้ามไปทำ Fallback ข้างล่าง
     
-    # Fallback (เส้นตรง)
-    return {'distance_km': 0, 'duration_min': 0, 'path': [start_coords, end_coords], 'status': 'fallback'}
-
+    # 2. ระบบสำรอง (Fallback): คำนวณระยะขจัด (Haversine) เอง
+    # สูตรคำนวณระยะทางระหว่างจุด 2 จุดบนโลก
+    R = 6371 # รัศมีโลก (กม.)
+    dLat = math.radians(end_coords[0] - start_coords[0])
+    dLon = math.radians(end_coords[1] - start_coords[1])
+    a = math.sin(dLat/2)**2 + math.cos(math.radians(start_coords[0])) * math.cos(math.radians(end_coords[0])) * math.sin(dLon/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    dist_km = R * c
+    
+    # ประเมินเวลา (สมมติความเร็วเฉลี่ย 30 กม./ชม. เพราะภูเก็ตรถติด/ทางเขา)
+    duration_min = (dist_km / 30) * 60 
+    
+    return {
+        'distance_km': dist_km,
+        'duration_min': duration_min,
+        'path': [start_coords, end_coords], # ลากเส้นตรง
+        'status': 'fallback' # สถานะบอกว่าเป็นเส้นสำรอง
+    }
+    
 def find_nearest_tambon(lat, lng):
     min_dist = 9999
     nearest = None
