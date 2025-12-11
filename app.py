@@ -9,6 +9,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder
 import time
 from datetime import datetime
+import math  # <--- เพิ่ม import math (สำคัญมาก!)
 
 # --- 1. Config ---
 st.set_page_config(page_title="RoadRisk AI Center", page_icon="🧭", layout="wide")
@@ -54,15 +55,16 @@ def train_ai_model(df_stats):
     model.fit(X, y)
     return model, le_tambon, le_vehicle
 
-# --- แก้ไขฟังก์ชันนี้ (เพิ่มสูตรคำนวณสำรอง) ---
+# --- 3. Routing & Helper Functions (แก้ไขแล้ว!) ---
 @st.cache_data(ttl=3600)
 def get_route_osrm(start_coords, end_coords):
-    # 1. ลองยิงไปที่ OSRM API (Server ฟรี)
+    """คำนวณเส้นทางจาก OSRM (มีระบบสำรองถ้า API ล่ม)"""
+    # 1. ลองยิงไปที่ OSRM API
     url = f"http://router.project-osrm.org/route/v1/driving/{start_coords[1]},{start_coords[0]};{end_coords[1]},{end_coords[0]}?overview=full&geometries=geojson"
-    headers = {'User-Agent': 'Mozilla/5.0'} # ปลอมตัวเป็น Browser
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
-        response = requests.get(url, headers=headers, timeout=3) # รอแค่ 3 วิพอ
+        response = requests.get(url, headers=headers, timeout=3)
         if response.status_code == 200:
             data = response.json()
             if data['code'] == 'Ok':
@@ -75,10 +77,9 @@ def get_route_osrm(start_coords, end_coords):
                     'status': 'ok'
                 }
     except:
-        pass # ถ้า Error ให้ข้ามไปทำ Fallback ข้างล่าง
-    
-    # 2. ระบบสำรอง (Fallback): คำนวณระยะขจัด (Haversine) เอง
-    # สูตรคำนวณระยะทางระหว่างจุด 2 จุดบนโลก
+        pass # ถ้า Error ให้ข้ามไปทำ Fallback
+
+    # 2. ระบบสำรอง (Fallback): คำนวณระยะขจัด (Haversine)
     R = 6371 # รัศมีโลก (กม.)
     dLat = math.radians(end_coords[0] - start_coords[0])
     dLon = math.radians(end_coords[1] - start_coords[1])
@@ -86,16 +87,16 @@ def get_route_osrm(start_coords, end_coords):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     dist_km = R * c
     
-    # ประเมินเวลา (สมมติความเร็วเฉลี่ย 30 กม./ชม. เพราะภูเก็ตรถติด/ทางเขา)
+    # ประเมินเวลา (สมมติความเร็วเฉลี่ย 30 กม./ชม.)
     duration_min = (dist_km / 30) * 60 
     
     return {
         'distance_km': dist_km,
         'duration_min': duration_min,
-        'path': [start_coords, end_coords], # ลากเส้นตรง
-        'status': 'fallback' # สถานะบอกว่าเป็นเส้นสำรอง
+        'path': [start_coords, end_coords], # เส้นตรง
+        'status': 'fallback'
     }
-    
+
 def find_nearest_tambon(lat, lng):
     min_dist = 9999
     nearest = None
@@ -122,38 +123,21 @@ def load_data():
         return df.dropna(subset=['lat'])
     except: return None
 
-# --- 🔥 NEW FEATURE: Smart Advice Generator ---
+# --- Smart Advice Generator ---
 def generate_advice_card(risk_score, tambon_name, is_rain, vehicle_type, hour):
     tips = []
+    if risk_score > 70: tips.append("🚨 **อันตรายสูง:** หลีกเลี่ยงเส้นทางนี้หรือจอดพัก")
+    elif risk_score > 40: tips.append("⚠️ **ระวังพิเศษ:** ลดความเร็วลงจากปกติ")
+    else: tips.append("✅ **เดินทางปกติ:** ไม่ประมาท")
     
-    # 1. คำแนะนำตามความเสี่ยง
-    if risk_score > 70:
-        tips.append("🚨 **อันตรายสูง:** หลีกเลี่ยงเส้นทางนี้หากทำได้ หรือจอดพักรอสภาพอากาศดีขึ้น")
-    elif risk_score > 40:
-        tips.append("⚠️ **ระวังพิเศษ:** ขับขี่ช้าๆ ลดความเร็วลงจากปกติ")
-    else:
-        tips.append("✅ **เดินทางปกติ:** ขับขี่ตามกฎจราจร ไม่ประมาท")
-
-    # 2. คำแนะนำตามสภาพถนน (Road Type)
     if tambon_name in ['ป่าตอง', 'กะรน', 'กมลา', 'ราไวย์', 'สาคู']:
-        tips.append("⛰️ **ทางเขา/โค้ง:** ใช้เกียร์ต่ำ (Engine Brake) ห้ามเลียเบรก ระวังทางโค้งหักศอก")
+        tips.append("⛰️ **ทางเขา/โค้ง:** ใช้เกียร์ต่ำ ห้ามเลียเบรก")
     elif tambon_name in ['เทพกระษัตรี', 'ไม้ขาว', 'ศรีสุนทร']:
-        tips.append("🛣️ **ทางหลวง:** ระวังรถกลับรถตัดหน้า และรักษาระยะห่างจากคันหน้า")
-    else:
-        tips.append("🏙️ **ในเมือง:** ระวังมอเตอร์ไซค์แทรกเลน และคนข้ามถนน")
-
-    # 3. คำแนะนำตามสภาพอากาศ
-    if is_rain:
-        tips.append("🌧️ **ฝนตก:** ถนนลื่นมาก! ลดความเร็ว 30% เปิดไฟหน้า และเว้นระยะเบรก 2 เท่า")
-
-    # 4. คำแนะนำตามยานพาหนะ
-    if vehicle_type == "Motorcycle":
-        tips.append("🛵 **มอเตอร์ไซค์:** สวมหมวกกันน็อก ล็อกสายรัดคาง ชิดซ้าย และระวังทรายลื่น")
+        tips.append("🛣️ **ทางหลวง:** ระวังรถกลับรถตัดหน้า")
     
-    # 5. คำแนะนำตามเวลา
-    if hour >= 18 or hour <= 5:
-        tips.append("🌙 **กลางคืน:** ทัศนวิสัยต่ำ ระวังจุดมืดและรถที่ไม่มีไฟท้าย")
-
+    if is_rain: tips.append("🌧️ **ฝนตก:** ถนนลื่น! ลดความเร็ว 30% เว้นระยะเบรก")
+    if vehicle_type == "Motorcycle": tips.append("🛵 **มอเตอร์ไซค์:** สวมหมวกกันน็อก ชิดซ้าย")
+    if hour >= 18 or hour <= 5: tips.append("🌙 **กลางคืน:** ทัศนวิสัยต่ำ ระวังจุดมืด")
     return tips
 
 # --- 4. Main App ---
@@ -184,19 +168,18 @@ if df_tambon is not None:
             score = row['ผู้ประสบภัย'] + (200 if weather_now['is_rain'] else 0)
             color = '#FF0000' if score > 1000 else '#FF8C00' if score > 500 else '#32CD32'
             
-            # Popup แบบมีคำแนะนำย่อ
             popup_txt = f"""
             <div style='font-family:sans-serif; width:200px'>
                 <b>ต.{row['ตำบล']}</b><br>
-                ความเสี่ยง: {score:.0f} คะแนน<br>
+                ความเสี่ยง: {score:.0f}<br>
                 <hr>
-                {'⛰️ ทางเขา/โค้ง' if row['ตำบล'] in ['ป่าตอง','กะรน'] else '🛣️ ทางปกติ'}<br>
+                {'⛰️ ทางเขา/โค้ง' if row['ตำบล'] in ['ป่าตอง','กะรน'] else '🛣️ ทางปกติ'}
             </div>
             """
             folium.Circle([row['lat'], row['lng']], radius=row['ผู้ประสบภัย']*1.5, color=color, fill=True, fill_opacity=0.5, popup=folium.Popup(popup_txt)).add_to(m)
         st_folium(m, height=500)
 
-    # === TAB 2: Route Planner with ADVICE ===
+    # === TAB 2: Route Planner ===
     with tab_route:
         st.subheader("📍 กำหนดเส้นทาง & รับคำแนะนำ")
         input_method = st.radio("เลือกวิธีระบุพิกัด:", ["📝 เลือกจากรายชื่อ", "👆 จิ้มบนแผนที่"], horizontal=True)
@@ -204,7 +187,6 @@ if df_tambon is not None:
         start_coord, end_coord = None, None
         start_name, end_name = "", ""
 
-        # Input Logic (Dropdown / Map Click)
         if "รายชื่อ" in input_method:
             c1, c2 = st.columns(2)
             with c1: start_name = st.selectbox("จุดเริ่มต้น (A)", df_tambon['ตำบล'].unique(), index=4)
@@ -230,43 +212,48 @@ if df_tambon is not None:
         with c_time: travel_time = st.time_input("เวลาเดินทาง", current_time)
         with c_veh: vehicle_type = st.radio("ยานพาหนะ", ["Motorcycle", "Car"])
         
+        # ปุ่มคำนวณ
         if c_btn.button("🚀 คำนวณความเสี่ยงและขอคำแนะนำ", type="primary"):
             if start_coord and end_coord:
+                # 1. คำนวณเส้นทาง (ด้วยเวอร์ชันใหม่ที่มี Fallback)
                 route_data = get_route_osrm(start_coord, end_coord)
                 
-                # Predict
+                # 2. ทำนายความเสี่ยง
                 rain = weather_now['is_rain']
                 v_code = le_vehicle.transform([vehicle_type])[0]
                 t_end_code = le_tambon.transform([end_name])[0]
-                risk_end = model.predict([[t_end_code, travel_time.hour, rain, v_code]])[0] # เน้นปลายทาง
+                risk_end = model.predict([[t_end_code, travel_time.hour, rain, v_code]])[0]
                 
-                # Generate Advice
+                # 3. สร้างคำแนะนำ
                 advice_list = generate_advice_card(risk_end, end_name, rain, vehicle_type, travel_time.hour)
 
+                # 4. บันทึกลง Session State
                 st.session_state['calc_result'] = {
                     'route_data': route_data,
                     'trip_risk': risk_end,
                     'start_coord': start_coord, 'end_coord': end_coord,
                     'advice': advice_list
                 }
+            else:
+                st.warning("กรุณาเลือกจุดเริ่มต้นและปลายทางให้ครบถ้วน")
 
-        # Result Display
+        # แสดงผลลัพธ์จาก Session State
         if 'calc_result' in st.session_state:
             res = st.session_state['calc_result']
             
-            # 1. Metrics
+            # แจ้งเตือนถ้าใช้เส้นทางสำรอง
+            if res['route_data']['status'] == 'fallback':
+                st.warning("⚠️ ไม่สามารถเชื่อมต่อระบบนำทางได้: แสดงระยะทางเส้นตรงและการประเมินเวลาคร่าวๆ แทน")
+
             m1, m2, m3 = st.columns(3)
             m1.metric("⏳ เวลาเดินทาง", f"{int(res['route_data']['duration_min'])} นาที")
             m2.metric("📏 ระยะทาง", f"{res['route_data']['distance_km']:.1f} กม.")
             m3.metric("⚠️ ความเสี่ยงปลายทาง", f"{res['trip_risk']:.1f}%", delta_color="inverse")
             
-            # 2. Advice Card (ไฮไลท์ของฟีเจอร์นี้)
             st.markdown("### 💡 คำแนะนำการเดินทาง (Smart Advice)")
             with st.container():
-                for tip in res['advice']:
-                    st.info(tip) # แสดงเป็นกล่องข้อความสวยๆ
+                for tip in res['advice']: st.info(tip)
 
-            # 3. Map
             m_res = folium.Map(location=[(res['start_coord'][0]+res['end_coord'][0])/2, (res['start_coord'][1]+res['end_coord'][1])/2], zoom_start=11)
             AntPath(res['route_data']['path'], color='blue', weight=5).add_to(m_res)
             folium.Marker(res['start_coord'], icon=folium.Icon(color='green', icon='play')).add_to(m_res)
@@ -279,21 +266,16 @@ if df_tambon is not None:
         prompt = st.chat_input("พิมพ์ข้อความ (เช่น 'ไปป่าตอง')...")
         if prompt:
             st.chat_message("user").write(prompt)
-            
-            # Bot Logic with Advice
             target_tambon = None
             for t in df_tambon['ตำบล'].unique():
                 if t in prompt: target_tambon = t; break
             
             with st.chat_message("assistant"):
                 if target_tambon:
-                    # Predict Risk
                     rain = weather_now['is_rain']
                     v_code = le_vehicle.transform(['Motorcycle'])[0]
                     t_code = le_tambon.transform([target_tambon])[0]
                     risk = model.predict([[t_code, current_time.hour, rain, v_code]])[0]
-                    
-                    # Get Advice
                     advice = generate_advice_card(risk, target_tambon, rain, "Motorcycle", current_time.hour)
                     
                     st.markdown(f"**กำลังไป: {target_tambon}**")
@@ -301,7 +283,7 @@ if df_tambon is not None:
                     st.markdown("**คำแนะนำ:**")
                     for tip in advice: st.markdown(f"- {tip}")
                 else:
-                    st.write("สวัสดีครับ! พิมพ์ชื่อตำบลที่อยากไปได้เลยครับ เดี๋ยวผมเช็กความเสี่ยงและแนะนำเส้นทางให้")
+                    st.write("สวัสดีครับ! พิมพ์ชื่อตำบลที่อยากไปได้เลยครับ")
 
     with tab_data: st.dataframe(df_tambon)
 
